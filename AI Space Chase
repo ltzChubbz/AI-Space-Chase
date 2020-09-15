@@ -1,0 +1,1054 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.IO;
+
+namespace SpaceChaseLib
+{
+    public struct StudentInfo           // This structure is used to hold the students information
+    {
+        public string studentLastName;      // Student's last name
+        public string studentFirstName;     // Student's first name
+        public string studentIdNumber;      // Student's ID number
+        public string studentCourse;        // Students's course code
+    }
+
+    public struct GameStatus            // This structure holds the game status
+    {
+        public int GameLevel;           // current game level (zero if a task is being performed or in menu)
+        public int TaskLevel;           // current task (zero if a game is playing or in menu)
+        public int iteration;           // the number of times this task/game has been repeated
+        public double LevelTimeMS;      // time taken so far in the game level or task
+        public double TotalTimeMS;      // total game time taken for all levels
+    }
+
+    public struct ScoutControl           // This structure hold the thruster and control values for the Scout Ship
+    {
+        public double ThrustForward;    // This is the forward thrust (-ve thrust is rearward)
+        public double ThrustRight;      // This is sideways, or strafing thrust (+ve i to the right of the scout)
+        public double ThrustCW;         // This is angular/rotational thrust (+ve is clockwise)
+        // Maximum thrust values can the found in the SCParameters.TXT file
+        public bool ShieldOn;           // This is set to true if you want the shields to be on
+        public bool EnergyExtractorOn;  // This is set to true if you want the Energy Extractor to be operating
+        public bool MinerOn;            // This is set to true if you want the Miner to be operating
+    }
+
+    public struct ScoutStatus           // This structure hold the lastest status of the scout ship
+    {
+        public double deltaTime;        // Time since this was last called
+        public double deltaVelocityForward; // change in forward velocity (+ve forward)
+        public double deltaVelocityRight;   // change in sideways velocity (+ve right)
+        public double deltaVelocityAngularCW;   // change in rotational velocity (+ve is clockwise)
+        public double currentVelocityForward;   // current forward velocity (+ve forward)
+        public double currentVelocityRight;     // current sideways velocity (+ve right)
+        public double currentVelocityAngularCW; // current rotational velocity (+ve is clockwise)
+        public double averageVelocityForward;   // average forward velocity (+ve forward)
+        public double averageVelocityRight;     // average sideways velocity (+ve right)
+        public double averageVelocityAngularCW; // average rotational velocity (+ve is clockwise)
+        public double shieldEnergy;             // current level of shield energy (0.0 to 1.0)
+        public double hullIntegrity;            // current level of hull integrity (0.0 to 1.0)
+        public bool isShieldOn;                 // True if shield is on (Note: if shield is on but shield energy
+        //  is zero then the sheild is not effective)
+        public bool isExtractorOn;              // True if the extractor is on.
+        public bool isMinerOn;                  // True if the miner is on.
+    }
+
+    // ObjectType is an enumeration of the different object types the ship's sensors can detect
+    public enum ObjectType { Asteroid, BlackHole, Distortion, CombatDrone, Factory }
+
+    public struct SensorInfo                    // contains the information gathered from a sensor
+    {
+        public double range;                    // The range to the detected object
+        public double angle;                    // The angle from the front of the scout ship to the object
+        public ObjectType objectType;           // This is the type of object detected
+        public int objectID;                    // This is a unique ID for this object in its type
+    }
+
+    public struct report                        // This structre is used in task one to report on the blackhole location
+    {
+        public bool complete;                   // When this is set to true the task is complete
+        public double X;                        // This has to hold the X coord of the BlackHole
+        public double Y;                        // This has to hold the Y coord of the BlackHole
+    }
+
+    public struct PID_Params                // This structure is used to run a PID controller
+    {
+        public double input;                    // The current value
+        public double kP, kI, kD, kO;           // constants
+        public double eP, eI, eD;               // errors
+        public double setPoint;                 // The value we wish to obtain
+        public double lastErrorD;               // saving the previous D error
+        public double output;                   // output is feedback to the object being controlled
+        public double maxOut, minOut;           // Limits of the output
+    }
+    public struct pose
+    {
+        public double angle;
+        public double X;
+        public double Y;
+    }
+
+    public enum Task2State { find, approach, arrive, mine}             // The names of the different states in task 2
+    public enum Task3State { find, approach, arrive, mine, find1, approach1, mine1}             // The names of the different states in task 3
+
+    public class SCLib
+    {
+        // TODO: Add your global variables here
+        ScoutControl sc = new ScoutControl();
+        ScoutStatus scouts = new ScoutStatus();
+        pose sPose = new pose();
+
+        const double TwoPI = 6.28318548;
+        const double PI = 3.14159274;
+
+        PID_Params PIDParamsCW = new PID_Params();
+        PID_Params PIDParamsXVel = new PID_Params();
+        PID_Params PIDParamsYVel = new PID_Params();
+
+        int time1;
+
+        pose[] path = new pose[20];
+        int pathIndex;
+
+        double maximumVelocity;
+
+        report Rep = new report();
+
+        pose[] bharray = new pose[10];
+
+        double avoidThrustX = 0;
+        double avoidThrustY = 0;
+
+        GameStatus gstatus = new GameStatus();
+
+        Task2State task2state;
+        Task3State task3state;
+
+        SensorInfo sia = new SensorInfo();          // Holds the sensor info for the closest asteroid
+        int asteroidID;                             // ID number of the closest asteroid
+        SensorInfo si = new SensorInfo();           // Holds the sensor info for the closest asteroid
+
+        SensorInfo[] blackhole = new SensorInfo[11];//Holds the sensor info for the closest black hole
+        pose[] blackholes = new pose[11];
+        int blackholesMax;                          // The maximum black holes in the array
+
+        SensorInfo sid = new SensorInfo();          // Holds the sensor info for the closest distortion
+        int distortionID;
+
+        pose[] asteroids = new pose[31];           // Used to store the locations of all asteroids seen by the sensors
+        int asteroidsMax;                          // The maximum asteroids in the array
+        double targetX, targetY;
+
+        pose[] distortion = new pose[21];           // Used to store the locations of all distortion seen by the sensors
+        int distortionMax;                          // The maximum distortion in the array
+
+        private StreamWriter sw; //This holds the file to log data to in CSV format
+
+        // Method      : InitialiseGame
+        // Input       : na
+        // Output      : na
+        // Description :
+        //      This method is called once when the program is first run 
+        //      and can be use to initialise any variables if required
+        public void InitialiseGame()
+        {
+        }
+
+        // Method      : StudentDetails
+        // Input       : na
+        // Output      : SD (type:StudentInfo)
+        // Description :
+        //      This method is called once when the program is first run 
+        //      and is used to record the students details
+        public StudentInfo StudentDetails()
+        {
+            StudentInfo SD = new StudentInfo();
+
+            SD.studentLastName = "Chubb";    // Replace the string with your last name
+            SD.studentFirstName = "Sean";  // Replace the string with your first name
+            SD.studentIdNumber = "213118873";    // Replace the string with your student number
+            SD.studentCourse = "S463";    // Replace the string with your course code
+
+            return SD;
+        }
+
+        // Method      : ScreenMessage
+        // input       : na
+        // output      : strMessage (type: string)
+        // description :
+        //      This method is call 60 times per second.
+        //      It allows you to write a message to the top left of the screen.
+        //      You may like to use this for debugging.
+        //      Leave the message blank when submutting the assignments
+        // Example:
+        //      strMessage = "Ship X : " + X.ToString() + "\nShip Y : " + Y.ToString();
+        //      Assuming that X and Y are the ships coordinates,
+        //      setting strMessage above will display the following in the top left corner;
+        //          Ship X : -1834.679834
+        //          Ship Y : 352.6738307
+        //      The escape character "\n" seen before the "Ship Y : " will cause a new line to be added.
+        public String ScreenMessage()
+        {
+            string strMessage;
+
+            strMessage = "Ship X : " + sPose.X.ToString() + "\nShip Y: " + sPose.Y.ToString() + "\nShip A: " + sPose.angle.ToString() + "\nHull: " + scouts.hullIntegrity + "\nShields: " + scouts.shieldEnergy;
+
+            return strMessage;
+        }
+
+        // Method      : GameStatus
+        // Input       : gs (type:GameStatus)
+        // Output      : na
+        // Description : 
+        //      This method is called 60 times a second and provides
+        //      details on the current gaming status.
+        //      You may used this information as you wish.
+        public void GameStatus(GameStatus gs)
+        {
+            gstatus = gs;
+        }
+
+        // Method      : ThrustersAndControl
+        // Input       : na
+        // Output      : t (type:ScoutControl)
+        // Description :
+        //      The method is called 60 times a second and allows you
+        //      to control the Scout Ship's motion by providing three types of thrust.
+        //      It also controls the shields, Exctractor and Miner.
+        //      ThrustForward represents the forward and aft thrusters driving the 
+        //      ship forward (+ve value) or backwards (-ve value).
+        //      ThrustRight provides sideways thrust with +ve to the right of the ship.
+        //      ThrustCW controls the rotation thrusters with +ve thrust moving the ship clockwise.
+        //      The thrust values all have a maximum which can be found 
+        //      in the SCParameters.txt file.
+        public ScoutControl ThrustersAndControl()
+        {
+            //ScoutControl t = new ScoutControl();
+
+            //t.ThrustForward = 1;            // Replace the value with the forward thrust
+            //t.ThrustRight = 1;              // Replace the value with the sideways thrust
+            //t.ThrustCW = .5;                 // Replace the value with the rotational thrust
+            //t.ShieldOn = true;             // Set to true to turn the shields on
+            //t.EnergyExtractorOn = false;    // Set to true to turn on the Energy Extractor
+            //t.MinerOn = false;              // Set to true to turn on the Miner.
+
+            return sc;
+        }
+
+        // Method     : ProvideScoutStatus
+        // Input      : ss (type: ScoutStatus)
+        // Output     : na
+        // Dscription :
+        //      This method is call 60 times per second and provides the status of the scout ship.
+        //      You will need the status to control the ship
+        public void ProvideScoutStatus(ScoutStatus ss)
+        {
+            scouts = ss;
+
+        }
+
+        // Method      : Sensors
+        // Input       : Tachyon, Mass, RF,Visual,Radar (type:List<SenorInfo> - this is an array of variable length)
+        // Output      : na
+        // Description :
+        //      This method is call 60 times a second. It provides an array of detected object 
+        //      for each of the sensors.
+        //      The number of items in the array is found by using the Count member,
+        //      for example:
+        //              numberOfItems = Tachyon.Count;
+        //      You can then use a for loop to cycle through them all,
+        //      for example:
+        //              for (int i = 0; i < Tachyon.Count; i++)
+        //              {
+        //                  range = Tachyon[i].range;
+        //                  angleToObject = Tachyon[i].angle;
+        //                  objectType = Tachyon[i].objectType;
+        //                  objectID = Tachyon[i].objectID;
+        //              }
+        public void Sensors(List<SensorInfo> Tachyon, List<SensorInfo> Mass, List<SensorInfo> RF, List<SensorInfo> Visual, List<SensorInfo> Radar)
+        {
+            pose BHPose = new pose();
+            pose APose = new pose();
+            pose DPose = new pose();
+            pose p = new pose();
+
+            //         double FAngle = 0;
+            //         double FMag = 0;
+            sia.angle = 0;
+            sia.range = 0;
+            sid.angle = 0;
+            sid.range = 0;
+            avoidThrustX = 0;
+            avoidThrustY = 0;
+
+            for (int i = 0; i < 10; i++)
+            {
+                blackhole[i].angle = 0;
+                blackhole[i].range = 5000;
+            }
+            for (int i = 0; i < 31; i++)
+            {
+                asteroids[i].angle = 0;
+                asteroids[i].X = 5000;
+            }
+            for (int i = 0; i < 21; i++)
+            {
+                distortion[i].angle = 0;
+                distortion[i].X = 5000;
+            }
+
+            foreach (SensorInfo s in Visual)        // look at the visual sensor
+            {
+                if (s.objectType == ObjectType.Asteroid) // Check for asteroids
+                {
+                    if (asteroidID == -1)   // if no asteroid has been seen yet then save the ID and range and angle
+                    {
+                        sia.angle = s.angle;
+                        sia.range = s.range;
+                        asteroidID = s.objectID;
+                    }
+                    else if (s.objectID == asteroidID)  // if we have seen an asteroid then onlt save the angle and range if
+                    {                                   //     this is the first seen asteroid
+                        sia.angle = s.angle;
+                        sia.range = s.range;
+                    }
+
+                }
+                if (s.objectType == ObjectType.Distortion) // Check for distortions
+                {
+                    if (distortionID == -1)   // if no asteroid has been seen yet then save the ID and range and angle
+                    {
+                        sid.angle = s.angle;
+                        sid.range = s.range;
+                        distortionID = s.objectID;
+                    }
+                    else if (s.objectID == distortionID)  // if we have seen an asteroid then onlt save the angle and range if
+                    {                                   //     this is the first seen asteroid
+                        sid.angle = s.angle;
+                        sid.range = s.range;
+                    }
+                }
+            }
+
+
+            for (int i = 0; i < RF.Count; i++)
+            {
+                blackhole[RF[i].objectID] = RF[i];
+                blackhole[RF[i].objectID].range = 0;
+            }
+
+            foreach (SensorInfo m in Mass)
+            {
+                if (m.objectType == ObjectType.BlackHole)
+                {
+                    blackhole[m.objectID].range = m.range;
+                    //                   FAngle = blackhole[m.objectID].angle - PI;
+                    //                 FMag = 6; // use straight line equation to determine FMag.
+                    // Determine X and Y avoid Thrust using Trig.
+                    // Add calculated thrusts to previous thrust
+                }
+            }
+
+            foreach (SensorInfo s in Mass)      // Check the Mass sensor
+            {
+                if (s.objectType == ObjectType.BlackHole)   // Check for black holes
+                {
+                    si.range = s.range;     // get the range to the black hole
+                    if (s.range < 300)      // If we are close enough to a black hole work out the thrust required to get away from it.
+                    {
+                        double thrust = 900 / s.range;  //The thrust required is inverse to the distance
+                        p = RotateAboutZ(0, thrust, s.angle - PI);  //Rotate the thrust to the opposite direction of the black hole
+                        avoidThrustX += p.X;    // added the required thrust to thrusts determined for other black holes
+                        avoidThrustY += p.Y;
+                    }
+                    blackholes[s.objectID] = GetCoords(sPose.X, sPose.Y, sPose.angle, s.angle, s.range);  //add/update blackhole list
+                    if (s.objectID >= blackholesMax)    // Adjust maximum blackhole number if required
+                        blackholesMax = s.objectID + 1;
+                    blackholes[s.objectID].angle = 1;     // Use this to validate the instance of a blackhole
+
+                }
+
+                if (s.objectType == ObjectType.Asteroid)    // check for asteroids
+                {
+                    
+                    if (s.objectID == asteroidID)   // Save the range if we have seen this asteroid before and have its angle
+                    {
+                        sia.range = s.range;
+                    }
+                    asteroids[s.objectID] = GetCoords(sPose.X, sPose.Y, sPose.angle, s.angle, s.range);  // add/update asteroid list
+                    if (s.objectID >= asteroidsMax) // Adjust maximum asteroid number if required
+                    {
+                        asteroidsMax = s.objectID + 1;
+                    }
+                    asteroids[s.objectID].angle = 1;     // Use this to validate the instance of an asteroid
+                    if (s.range < 80)       // If close enough to an asteroid field then turn the miner on
+                    {
+                        sc.MinerOn = true;
+                    }
+                    if (scouts.hullIntegrity == 1.0)
+                    {
+                        sc.MinerOn = false;
+                    }
+                }
+            }
+
+            foreach (SensorInfo s in Tachyon)      // Check the Mass sensor
+            {
+
+                if (s.objectType == ObjectType.Distortion)    // check for asteroids
+                {
+
+                    if (s.objectID == distortionID)   // Save the range if we have seen this asteroid before and have its angle
+                    {
+                        sid.range = s.range;
+                    }
+                    distortion[s.objectID] = GetCoords(sPose.X, sPose.Y, sPose.angle, s.angle, s.range);  // add/update distortion list
+                    if (s.objectID >= distortionMax) // Adjust distortion number if required
+                    {
+                        distortionMax = s.objectID + 1;
+                    }
+                    distortion[s.objectID].angle = 1;     // Use this to validate the instance of an adistortion
+                    if (s.range < 80)       // If close enough to an distortion then turn the miner on
+                    {
+                        sc.EnergyExtractorOn = true;
+                    }
+                    if (scouts.shieldEnergy == 1.0)
+                    {             
+                            sc.EnergyExtractorOn = false;
+                    }
+                }
+            }
+
+
+            for (int i = 0; i < 10; i++)
+            {
+                if (blackhole[i].range < 5000)
+                    bharray[i] = GetCoords(sPose.X, sPose.Y, sPose.angle, blackhole[i].angle, blackhole[i].range);
+            }
+
+            // for task 1 to report blackhole location.
+
+            if ((blackhole[0].range > 0) && (blackhole[0].range < 5000) && (gstatus.TaskLevel == 1))
+            {
+
+                BHPose = GetCoords(sPose.X, sPose.Y, sPose.angle, blackhole[0].angle, blackhole[0].range);
+                Rep.X = BHPose.X;
+                Rep.Y = BHPose.Y;
+                Rep.complete = true;
+
+            }
+            // for task 2 to report asteroid location.
+
+            if ((sia.range > 0) && (sia.range < 5000) && (gstatus.TaskLevel == 2))
+            {
+
+                APose = GetCoords(sPose.X, sPose.Y, sPose.angle, asteroids[0].angle, sia.range);
+                Rep.X = APose.X;
+                Rep.Y = APose.Y;
+                Rep.complete = true;
+
+            }
+            
+            // for task 3 to report distortion location.
+
+            if ((sid.range > 0) && (sid.range < 5000) && (gstatus.TaskLevel == 3))
+            {
+
+                DPose = GetCoords(sPose.X, sPose.Y, sPose.angle, distortion[0].angle, sid.range);
+                Rep.X = DPose.X;
+                Rep.Y = DPose.Y;
+                Rep.complete = true;
+            }
+        }
+
+        // Method      : StartLevel
+        // Input       : levelNumber (type: int)
+        // Output      : na
+        // Description :
+        // This method is call once at the start of a game level and it give the games level.
+        public void StartLevel(int levelNumber)
+        {
+            sPose.X = 0;
+            sPose.Y = 0;
+            sPose.angle = 0;
+
+            PIDParamsCW = PIDParametersSet(10, 0, 0, 1, -3, 3, 0, 0);
+
+            maximumVelocity = 0.4;
+        }
+
+        // Method      : EndLevel
+        // Input       : levelNumber (type: int), IsScoutAlive (type: bool)
+        // Output      : na
+        // Description :
+        //      This method is call once at the end of a game level.
+        //      It give the games level and if the scout survived the level.
+        public void EndLevel(int levelNumber, bool IsScoutAlive)
+        {
+
+        }
+
+        // Method      : InLevel
+        // Input       : levelNumber (type: int)
+        // Output      : na
+        // Description :
+        //      This method is call 60 times per second whilst in the game.
+        //      It give the games level.
+        public void InLevel(int levelNumber)
+        {
+            TrackShip();
+        }
+
+        // Method      : StartTask
+        // Input       : task (type: int)
+        // Output      : na
+        // Description :
+        // This method is call once at the start of a task and it give the task number.
+        public void StartTask(int task)
+        {
+            sPose.X = 0;
+            sPose.Y = 0;
+            sPose.angle = 0;
+            sc.ThrustForward = 0;
+            sc.ThrustRight = 0;
+            sc.ThrustCW = 0;
+            sc.ShieldOn = false;
+            time1 = 0;
+            sc.MinerOn = false;
+            sc.EnergyExtractorOn = false;
+            PIDParamsCW = PIDParametersSet(10, 0, 0, 1, -3, 3, 0, 0);
+            PIDParamsXVel = PIDParametersSet(10, 0, 0, 1, -1.5, 1.5, 0, 0);
+            PIDParamsYVel = PIDParametersSet(10, 0, 0, 1, -3, 3, 0, 0);
+
+            path[0].X = -1000;        // Generate a path of waypoints
+            path[0].Y = -1000;
+            path[1].X = -1000;
+            path[1].Y = 1000;
+            path[2].X = 1000;
+            path[2].Y = 1000;
+            path[3].X = 1000;
+            path[3].Y = -1000;
+            path[4].X = -1000;
+            path[4].Y = -1000;
+            path[5].X = -1000;
+            path[5].Y = 1000;
+            path[6].X = 1000;
+            path[6].Y = 1000;
+            path[7].X = 1000;
+            path[7].Y = -1000;
+            pathIndex = 0;
+
+            maximumVelocity = 0.4;
+
+            Rep.complete = false;
+            Rep.X = 0;
+            Rep.Y = 0;
+
+            task2state = Task2State.find;
+            task3state = Task3State.find;
+            asteroidID = -1;
+            distortionID = -1;
+            blackholesMax = 0;
+            targetX = 0;
+            targetY = 0;
+            sia.range = 0;
+            sia.angle = 0;
+            sid.range = 0;
+            sid.angle = 0;
+            
+        }
+
+        // Method      : EndTask
+        // Input       : task (type: int), IsScoutAlive (type: bool)
+        // Output      : na
+        // Description :
+        //      This method is call once at the end of a task.
+        //      It give the task number and if the scout survived the task.
+        public void EndTask(int task, bool IsScoutAlive)
+        {
+
+        }
+
+        // Method      : InTask
+        // Input       : task (type: int)
+        // Output      : na
+        // Description :
+        //      This method is call 60 times per second whilst in the task.
+        //      It give the games level.
+        public void InTask(int task)
+        {
+            TrackShip();
+
+            time1++;
+
+            switch (task)
+            {
+                case 1:
+                    InTask1();
+                    break;
+                case 2:
+                    InTask2();
+                    break;
+                case 3:
+                    InTask3();
+                    break;
+            }
+        }
+
+        // Method      : Report
+        // Input       : na
+        // Output      : r (type: report)
+        // Description :
+        //      This method is call 60 time per second.
+        //      It is used during task 1 which required you to find and report
+        //      the location of the blackhole. Once the blackhole has been found,
+        //      set the X and Y coords of the blackhole and set complete to true.
+        //      It is also used in task 2 to report an asteroid. Set complete to true
+        //      when an asteroid has been detected. For this X and Y are not required.
+
+        public report Report()
+        {
+            //  report r = new report();    // set up a report structure to return
+
+            //  r.complete = false;         // Set to true when the report is ready
+            //  r.X = 0;                    // Set to the blackhole's X coord
+            //  r.Y = 0;                    // Set to the blackhole's Y coord
+
+            return Rep;
+        }
+
+        // Method      : CreateLogFile
+        // Input       : na
+        // Output      : na
+        // Description :
+        //      This method can be used to start a log file.
+        //      This creates a text file and then writes the first few line of the file.
+        //      If you put commas between the variable it will be a Comma Seperated File (CSV)
+        //      and can be open in Excel later on.
+        private void CreateLogFile()
+        {
+            sw = File.CreateText("MyLog.csv"); // Open log file
+            sw.WriteLine("Sean Chubb");    // Write first line of log (usually name of log)
+            sw.WriteLine("");           // Write a blank line
+            sw.WriteLine("Velocity Forward,Velocity Sideways,Velocity Rotational");   // Write second line (usually column headings)
+
+        }
+
+        // Method      : LogData
+        // Input       : na
+        // Output      : na
+        // Description :
+        //      This method can be used to file data to a log file created in CreateLogFile.
+        //      By putting commas between the variables you will get a CSV file.
+        //      All types of data have the .ToString() member to convert the type to a string
+        public void LogData()
+        {
+            //    sw.WriteLine(velForward.ToString() + "," +velRight.ToString() + "," + velRotation.ToString());  // Place variable that match the heading in CreateLogFile
+        }
+
+        // Method      : CloseLogFile
+        // Input       : na
+        // Output      : na
+        // Description :
+        //      This method will close the file opened in CreateLogFile.
+        //      Use it when you have finished logging data.
+        public void CloseLogFile()
+        {
+            try
+            {
+                sw.Close();
+                sw.Dispose();
+            }
+            catch
+            {
+            }
+        }
+
+        // Method      : PIDController
+        // Input       : pidP (type: PID_Params)
+        // Output      : (type: PID_Params)
+        // Description :
+        //      This method will run one step of a PID controller.
+        //      It accepts PID parameters from the previous step and a control input (set point).
+        //      It returns the PID parameters for the next step and the control output.
+        public PID_Params PIDController(PID_Params pidP)
+        {
+            pidP.eP = pidP.setPoint - pidP.input;  // P error
+
+            pidP.eD = pidP.eP - pidP.lastErrorD;   // D error
+            pidP.lastErrorD = pidP.eP;            // Save last error;
+
+            pidP.output = (pidP.kP * pidP.eP + pidP.kI * pidP.eI + pidP.kD * pidP.eD) / pidP.kO;
+
+            if (pidP.output > pidP.maxOut)      // cap the control output
+                pidP.output = pidP.maxOut;
+            else if (pidP.output < pidP.minOut)
+                pidP.output = pidP.minOut;
+
+            pidP.eI += pidP.eP;               // I error
+            if (pidP.eI > pidP.maxOut)        // cap the I error
+                pidP.eI = pidP.maxOut;
+            if (pidP.eI < pidP.minOut)
+                pidP.eI = pidP.minOut;
+
+            return pidP;
+        }
+
+        //Method        : PIDParametersSet
+        //Input         : pidP, (type PI_Params) P,I,D,O,Min,Max,Setpoint,input (all type double)
+        //Output        : (type: PID_Params)
+        //Description   : 
+        //      Set the PID Constants in pidP
+        public PID_Params PIDParametersSet(PID_Params pidP, double P, double I, double D, double O, double Min, double Max, double Setpoint, double input)
+        {
+            PID_Params p;
+            p = pidP;
+
+            p.input = input;
+            p.kD = D;
+            p.kI = I;
+            p.kO = O;
+            p.kP = P;
+            p.maxOut = Max;
+            p.minOut = Min;
+            p.setPoint = Setpoint;
+
+            return p;
+        }
+
+
+        //Method        : PIDParametersSet
+        //Input         : P,I,D,O,Min,Max,Setpoint,input (all type double)
+        //Output        : (type: PID_Params)
+        //Description   : 
+        //      Set the PID Constants
+        public PID_Params PIDParametersSet(double P, double I, double D, double O, double Min, double Max, double Setpoint, double input)
+        {
+            PID_Params p;
+
+            p.eD = 0;
+            p.eI = 0;
+            p.eP = 0;
+            p.input = 0;
+            p.kD = D;
+            p.kI = I;
+            p.kO = O;
+            p.kP = P;
+            p.lastErrorD = 0;
+            p.maxOut = Max;
+            p.minOut = Min;
+            p.output = 0;
+            p.setPoint = Setpoint;
+
+            return p;
+        }
+
+        public void TrackShip()             // Use the current velocities to track the ship
+        {
+            double dx, dy, ndx, ndy;
+
+
+            dy = scouts.averageVelocityForward * scouts.deltaTime;  // Distance moved forward since last time (use average velocity)
+            dx = scouts.averageVelocityRight * scouts.deltaTime;    // Distance moved sideways since last time
+
+            sPose.angle += scouts.currentVelocityAngularCW * (scouts.deltaTime / 2);  // Get half of the angle rotated through since last time
+            // (This is the average angle and is used to make the tracking more accurate)
+            sPose.angle = sPose.angle % TwoPI;          // ensure to angle is between -2*PI ans 2*PI
+
+            ndx = dx * Math.Cos(sPose.angle) + dy * Math.Sin(sPose.angle);  // Rotate the forward and sideways distances to world coords
+            ndy = -dx * Math.Sin(sPose.angle) + dy * Math.Cos(sPose.angle);
+            sPose.X += ndx;                             // Update the scouts coordinates
+            sPose.Y += ndy;
+
+            sPose.angle += scouts.currentVelocityAngularCW * (scouts.deltaTime / 2);    // Get the last half of the angle rotated through
+            sPose.angle = sPose.angle % TwoPI;          // ensure to angle is between -2*PI ans 2*PI
+
+        }
+
+        pose RotateAboutZ(double x, double y, double angle) // Rotate a vector clockwise through a given angle
+        {
+            pose p;
+            p.angle = angle;
+            p.X = x * Math.Cos(angle) + y * Math.Sin(angle);
+            p.Y = -x * Math.Sin(angle) + y * Math.Cos(angle);
+
+            /*
+             * The following is the rotation for rotating through an anti-clockwise direction and is found in most text books
+             * X' = xCosA - ySinA
+             * Y' = xSinA + yCosA
+             * 
+             * But we are rotating in a clockwise direction so the rotational equations become;
+             * X' = xCosA + ySinA
+             * Y' = -xCosA + ySinA
+            */
+            return p;
+        }
+
+        public void MoveToTarget(double targetX, double targetY, double MaxVelocity)
+        {
+            double deltaX, deltaY;
+
+            deltaX = targetX - sPose.X;
+            deltaY = targetY - sPose.Y;
+
+            double angletoface = Math.Atan2(deltaX, deltaY);
+            double angleBetweenFaceAndCurrectHeading = angletoface - sPose.angle;
+            angleBetweenFaceAndCurrectHeading = angleBetweenFaceAndCurrectHeading % TwoPI;
+            if (angleBetweenFaceAndCurrectHeading > PI)
+                angleBetweenFaceAndCurrectHeading = angleBetweenFaceAndCurrectHeading - TwoPI;
+            if (angleBetweenFaceAndCurrectHeading < -PI)
+                angleBetweenFaceAndCurrectHeading = angleBetweenFaceAndCurrectHeading + TwoPI;
+
+            double requireCWVel = angleBetweenFaceAndCurrectHeading / 64;
+
+            if (requireCWVel > 0.005f)
+                requireCWVel = 0.005f;
+            if (requireCWVel < -0.005f)
+                requireCWVel = -0.005f;
+
+            PIDParamsCW = PIDParametersSet(PIDParamsCW, 10000, 0, 0, 1, -3, 3, requireCWVel, scouts.currentVelocityAngularCW);
+            PIDParamsCW = PIDController(PIDParamsCW);
+
+            sc.ThrustCW = PIDParamsCW.output;
+
+            double distance = Math.Sqrt(deltaX * deltaX + deltaY * deltaY);
+            double newdx, newdy;
+
+            newdx = distance * Math.Sin(angleBetweenFaceAndCurrectHeading);
+            newdy = distance * Math.Cos(angleBetweenFaceAndCurrectHeading);
+
+            double requiredXVel = newdx / 165;
+            double requiredYVel = newdy / 165;
+
+            if (requiredYVel > MaxVelocity)
+                requiredYVel = MaxVelocity;
+
+
+            PIDParamsXVel = PIDParametersSet(PIDParamsXVel, 10000, 0, 0, 1, -1.5, 1.5, requiredXVel, scouts.currentVelocityRight);
+            PIDParamsXVel = PIDController(PIDParamsXVel);
+
+            sc.ThrustRight = PIDParamsXVel.output + avoidThrustX;
+
+            PIDParamsYVel = PIDParametersSet(PIDParamsYVel, 10000, 0, 0, 1, -3, 3, requiredYVel, scouts.currentVelocityForward);
+            PIDParamsYVel = PIDController(PIDParamsYVel);
+
+            sc.ThrustForward = PIDParamsYVel.output + avoidThrustY;
+
+
+        }
+
+        private void InTask1()
+        {
+            if (time1 < 100)
+                maximumVelocity = 0.2;
+            else
+                maximumVelocity = 0.4;
+
+            MoveToWaypoint();
+        }
+
+        private void InTask2()
+        {
+            sc.MinerOn = false;
+            pose p;
+            switch (task2state)
+            {
+                case Task2State.find:
+                    sc.MinerOn = false;
+                    if (sia.angle != 0)     // If the sensors see an asteroid then record it and approach it
+                    {
+                        // When the asteroid is first detected, only the angle is accurate
+                        p = GetCoords(sPose.X, sPose.Y, sPose.angle, sia.angle, sia.range - 75);    // Get the asteroids coords
+                        targetX = p.X;  // Record its position
+                        targetY = p.Y;
+
+                        task2state = Task2State.approach;   // Change state to approach the asteroid field
+                    }
+                    else
+                        MoveToWaypoint(); // If there is no asteroid field seen yet then follow a path of waypoints
+                    break;
+                case Task2State.approach:   // Get to the asteroid as quick as possible
+                    sc.MinerOn = false;
+                    if (sia.range < 350 && sia.range > 0)
+                    {
+                        // Once close enough that the range is accurate re-record the asteroids position
+                        p = GetCoords(sPose.X, sPose.Y, sPose.angle, sia.angle, sia.range - 75); //The range -75 gives a point on the edge of the asteroid
+                        targetX = p.X;
+                        targetY = p.Y;
+                        task2state = Task2State.arrive; // With an accurate position we change to the arrive state
+                    }
+                    MoveToTarget(targetX, targetY, maximumVelocity);      //Move scout to the asteroid
+                    break;
+                case Task2State.arrive:     // arrive at the asteroid stopping on the edge of it.
+                    sc.MinerOn = false;
+                    MoveToTarget(targetX, targetY, maximumVelocity);      //Move scout to the asteroid
+                    if (sia.range < 80)     // Once we are with mining range start the miner by going to the mine state
+                        task2state = Task2State.mine;
+                    break;
+                case Task2State.mine:       // Mine the asteroid
+                    sc.MinerOn = true;
+                    MoveToTarget(targetX, targetY, maximumVelocity);    //Slow the scout down so that it may keep station
+                    break;
+            }
+        }
+
+        private void InTask3()
+        {
+           
+            pose p;
+            switch (task3state)
+            {
+                   
+                case Task3State.find:
+                    sc.ShieldOn = false;
+                    p = GetCoords(5000, 5000, 0, 0, 0);
+                    if (sia.angle != 0)     // If the sensors see an asteroid then record it and approach it
+                    {
+                        // When the asteroid is first detected, only the angle is accurate
+                        p = GetCoords(sPose.X, sPose.Y, sPose.angle, sia.angle, sia.range - 75);    // Get the asteroids coords
+                        targetX = p.X;  // Record its position
+                        targetY = p.Y;
+
+                        task3state = Task3State.approach;   // Change state to approach the asteroid field
+                    }
+                    else
+                    {
+                        MoveToWaypoint(); // If there is no asteroid field seen yet then follow a path of waypoints
+                    }
+                    break;
+                case Task3State.approach:   // Get to the asteroid as quick as possible
+                    if (sia.range < 350 && sia.range > 0)
+                    {
+                        // Once close enough that the range is accurate re-record the asteroids position
+                        p = GetCoords(sPose.X, sPose.Y, sPose.angle, sia.angle, sia.range - 75); //The range -75 gives a point on the edge of the asteroid
+                        targetX = p.X;
+                        targetY = p.Y;
+                        task3state = Task3State.arrive; // With an accurate position we change to the arrive state
+                    }
+                    MoveToTarget(targetX, targetY, maximumVelocity);      //Move scout to the asteroid
+                    break;
+                case Task3State.arrive:     // arrive at the asteroid stopping on the edge of it.
+                    MoveToTarget(targetX, targetY, maximumVelocity);      //Move scout to the asteroid
+                    if (sia.range < 80)     // Once we are with mining range start the miner by going to the mine state
+                    {
+                        task3state = Task3State.mine;
+                    }
+                    break;
+                case Task3State.mine:       // Mine the asteroid
+                    MoveToTarget(targetX, targetY, maximumVelocity);    //Slow the scout down so that it may keep station
+                    if (scouts.hullIntegrity == 1.0)
+                    {
+                        task3state = Task3State.find1;
+                    }                    
+                    break;
+                    
+                case Task3State.find1:
+                    if (sid.angle != 0)     // If the sensors see a distortion then record it and approach it
+                    {
+                        // When the ditortion is first detected, only the angle is accurate
+                        p = GetCoords(sPose.X, sPose.Y, sPose.angle, sid.angle, sid.range);    // Get the asteroids coords
+                        targetX = p.X;  // Record its position
+                        targetY = p.Y;
+
+                        task3state = Task3State.approach1;   // Change state to approach the asteroid field
+                    }
+                    else
+                        MoveToWaypoint(); // If there is no asteroid field seen yet then follow a path of waypoints
+                    break;
+                case Task3State.approach1:   // Get to the asteroid as quick as possible
+                    if (sid.range < 500 && sid.range > 0)
+                    {
+                        // Once close enough that the range is accurate re-record the asteroids position
+                        p = GetCoords(sPose.X, sPose.Y, sPose.angle, sid.angle, sid.range);
+                        targetX = p.X;
+                        targetY = p.Y;
+                        task3state = Task3State.mine1; // With an accurate position we change to the mine state
+                    }
+                    MoveToTarget(targetX, targetY, maximumVelocity);      //Move scout to the distortion
+                    break;
+                case Task3State.mine1:       // Mine the distortion
+                    MoveToTarget(targetX, targetY, maximumVelocity);    //Slow the scout down so that it may keep stationary
+                    if (scouts.shieldEnergy == 1.0)
+                    {
+                        sc.ShieldOn = true;
+                    }
+                    else
+                    {
+                        sc.ShieldOn = false;
+                    }
+                    break;
+              
+            }
+        }
+        public void MoveToWaypoint()        // Get scout to follow a path of waypoints
+        {
+            pose targetPose = new pose();
+            double deltaX, deltaY;
+
+            targetPose.X = path[pathIndex].X; // Get coords of current waypoint
+            targetPose.Y = path[pathIndex].Y;
+
+            deltaX = targetPose.X - sPose.X;    // Get the distance between the current position and the waypoit
+            deltaY = targetPose.Y - sPose.Y;
+
+            if (((deltaX > -100) && (deltaX < 100)) && ((deltaY < 100) && (deltaY > -100))) //If we are close enough to the waypoit...
+            {
+                PIDParamsCW = PIDParametersReset(PIDParamsCW);    //Reset to PID motion controllers
+                PIDParamsXVel = PIDParametersReset(PIDParamsXVel);
+                PIDParamsYVel = PIDParametersReset(PIDParamsYVel);
+                pathIndex++;                                    // and go to the next waypoint
+            }
+            if (pathIndex > 7)                          // If we have got to the last waypoint then start again at the first waypoint
+                pathIndex = 0;
+
+            targetPose.X = path[pathIndex].X;           // Get the waypoint coords is case they have changed
+            targetPose.Y = path[pathIndex].Y;
+            MoveToTarget(targetPose.X, targetPose.Y, maximumVelocity);  // Move scout to towards the waypoint
+
+        }
+
+        //Method        : PIDParametersReset
+        //Input         : pidP (type: PID_Params)
+        //Output        : (type: PID_Params)
+        //Description   : 
+        //      Reset/Clear the PID parameters
+        //      Zero all variables except kO which must be 1.
+        public PID_Params PIDParametersReset(PID_Params pidP)
+        {
+            PID_Params p;
+            p = pidP;
+
+            p.eD = 0;
+            p.eI = 0;
+            p.eP = 0;
+            p.input = 0;
+            p.kD = 0;
+            p.kI = 0;
+            p.kO = 1;
+            p.kP = 0;
+            p.lastErrorD = 0;
+            p.maxOut = 0;
+            p.minOut = 0;
+            p.output = 0;
+            p.setPoint = 0;
+
+            return p;
+        }
+
+        // Get the coords of an object reported by the sensors. For this we need then coords and angle of the scout, the angle to the object and the range
+        pose GetCoords(double originX, double originY, double originAngle, double angle, double range)
+        {
+            pose coords;    // Use to hold the new coords
+
+            coords.angle = 0;
+
+            double sine = Math.Sin(originAngle + angle);    // Get the sine and cos the the world angle to the object which is the scouts angle plus
+            double cosine = Math.Cos(originAngle + angle);  //   the reported angle from the scout
+            coords.X = originX + sine * range;      // Calculate the new coords by adding the X & Y distances of the object from the scout
+            coords.Y = originY + cosine * range;    //  to the scouts position
+
+            return coords;
+        }
+    }
+}
